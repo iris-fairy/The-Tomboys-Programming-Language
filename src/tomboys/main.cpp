@@ -558,6 +558,11 @@ int main(int argc, char* argv[])
                 tomboys::inputerr(ln, "NEQ", "The operator`s operand should be a number.");
             }
         }
+        else if (line == "NOT")
+        {
+            tomboys::token_t token;
+            env.stack.push_back(!tomboys::distbool(token));
+        }
         else if (line == "OR")
         {
             tomboys::token_t l, r;
@@ -631,11 +636,11 @@ int main(int argc, char* argv[])
             
             if (std::holds_alternative<std::string>(func))
             {
-                enc.func.at(std::get<std::string>(func));
+                env.func.at(std::get<std::string>(func))(env, ln);
             }
             else
             {
-                inputerr(ln, "CALL=MODULE", "Function name should be a string.");
+                tomboys::inputerr(ln, "CALL=MODULE", "Function name should be a string.");
             }
         }
         else if (line == "ERASE")
@@ -647,21 +652,21 @@ int main(int argc, char* argv[])
             }
             catch (const std::exception& e)
             {
-                inputerr(ln, "ERASE", e.what());
+                tomboys::inputerr(ln, "ERASE", e.what());
             }
 
             if (std::holds_alternative<std::string>(token))
             {
                 for (auto element = env.vars.begin(); element != env.vars.end(); element++)
                 {
-                    if (element.first == std::get<std::string>(token))
+                    if (element->first == std::get<std::string>(token))
                     {
                         env.vars.erase(element);
                     }
                 }
                 for (auto element = env.func.begin(); element != env.func.end(); element++)
                 {
-                    if (element.first == std::get<std::string>(token))
+                    if (element->first == std::get<std::string>(token))
                     {
                         env.func.erase(element);
                     }
@@ -669,7 +674,7 @@ int main(int argc, char* argv[])
             }
             else
             {
-                inputerr(ln, "ERASE", "Key name should be a string.");
+                tomboys::inputerr(ln, "ERASE", "Key name should be a string.");
             }
         }
         else if (line == "EXIT")
@@ -681,7 +686,7 @@ int main(int argc, char* argv[])
             }
             catch (const std::exception& e)
             {
-                inputerr(ln, "EXIT", e.what());
+                tomboys::inputerr(ln, "EXIT", e.what());
             }
 
             if (std::holds_alternative<std::int64_t>(token))
@@ -690,7 +695,7 @@ int main(int argc, char* argv[])
             }
             else
             {
-                inputerr(ln, "EXIT", "Exit code should be a number.");
+                tomboys::inputerr(ln, "EXIT", "Exit code should be a number.");
             }
         }
         else if (std::regex_match(line, str))
