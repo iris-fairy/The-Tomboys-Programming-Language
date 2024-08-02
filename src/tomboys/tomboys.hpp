@@ -21,7 +21,7 @@ namespace tomboys
 
     struct envs;
 
-    using ft = void(Token&, envs&, unsigned int);
+    using ft = void(envs&, unsigned int);
     using token_t = std::variant<Token, std::string, std::int64_t, double>;
     using op_t = std::function<void(envs&, token_t& l, token_t& r)>;
 
