@@ -1,722 +1,442 @@
-#include "tomboys.hpp"
-#include <fstream>
-#include <utility>
-#include <stdexcept>
+#include "stktb.hpp"
+#include "lib.hpp"
+#include <cstdint>
+#include <ostream>
+#include <cstdlib>
+#include <list>
+#include <string>
 #include <regex>
+#include <vector>
 #include <cmath>
+#include <boost/dll/shared_library.hpp>
+#include <boost/function.hpp>
+
+using stktb::Token;
 
 int main(int argc, char* argv[])
 {
-    if (argc != 2)
+    if (argc != 3)
     {
         std::cerr << "Invalid command argument.\n";
         return EXIT_FAILURE;
     }
 
-    std::ifstream fin(argv[1]);
-    if (!fin)
-    {
-        std::cerr << "Could not open the file.\n";
-        return EXIT_FAILURE;
-    }
+    auto src = stktb::getvalue<std::vector<std::uint8_t>>(argv[1]);
+    auto constants = stktb::getvalue<std::list<std::string>>(argv[2]);
 
-    std::string line;
-    tomboys::envs env;
+    stktb::envs env;
+    env.inblock.push(true);
     std::regex str("\".*\""), intre("[+-]?\\d+"), num("[+-]?\\d+(?:\\.\\d+)?"), comment("#.*");
-    env.intrueblock.push(true);
-    std::vector<std::string> src;
-    while (std::getline(fin, line))
+    for (std::size_t i = 0; i<src.size(); i++)
     {
-        src.push_back(line);
-    }
-    
-    for (unsigned int ln=0; ln<src.size(); ln++)
-    {
-        line = src.at(ln);
-        if (!line.empty() && line.back() == '\r')
+        std::uint8_t line;
+        try
         {
-            line.pop_back();
+            line = src.at(i);
+        }
+        catch (const std::exception& e)
+        {
+            stktb::err(i, "main-process", e.what());
         }
 
-        if (line == "ENDIF")
+        if (line == Token::ENDIF)
         {
             try
             {
-                env.intrueblock.pop();
+                env.inblock.pop();
             }
             catch (const std::exception& e)
             {
-                tomboys::inputerr(ln, "ENDIF", e.what());
+                stktb::err(i, "ENDIF", e.what());
             }
         }
-        else if (line == "ENDDEF")
+        else if (line == Token::ENDDEF)
         {
-            env.infunc = false;
+            env.insub = false;
             if (env.current != 0)
             {
-                ln = env.current;
+                i = env.current;
             }
         }
-        else if (!env.intrueblock.top())
+        else if (!env.inblock.top())
         {
             continue;
         }
-        else if (env.infunc)
+        else if (env.insub)
         {
             continue;
         }
-        else if (line == "STORE-NOREF")
+        
+        if (line == Token::PUSH)
         {
-            tomboys::token_t name;
-            try
+            std::string s = constants.front();
+            constants.pop_front();
+            stktb::token_t t;
+            if (std::regex_match(s, str))
             {
-                name = env.stack.back();
+                env.stack.push(s.substr(1, s.length()-2));
             }
-            catch (const std::exception& e)
+            else if (std::regex_match(s, num))
             {
-                tomboys::inputerr(ln, "STORE-NOREF", e.what());
+                env.stack.push(std::stod(s));
             }
-
-            if (std::holds_alternative<std::string>(name))
+            else if (std::regex_match(s, intre))
             {
-                env.vars.insert_or_assign(std::get<std::string>(name), "");
+                env.stack.push(std::int64_t(std::stoi(s)));
             }
             else
             {
-                tomboys::inputerr(ln, "STORE-NOREF", "The name of the variable must be a string.");
+                stktb::err(i, "PUSH", "Invalid constant group value.");
             }
-            env.stack.pop_back();
         }
-        else if (line == "STORE")
+        else if (line == Token::STORE)
         {
-            tomboys::token_t name, value;
-            try
-            {
-                name = env.stack.back(); 
-                value = env.stack.at(env.stack.size()-2);
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "STORE", e.what());
-            }
-
+            stktb::token_t name = stktb::get(env), value = stktb::get(env);
             if (std::holds_alternative<std::string>(name))
             {
                 env.vars.insert_or_assign(std::get<std::string>(name), value);
             }
-            else
+            else 
             {
-                tomboys::inputerr(ln, "STORE", "The name of the variable must be a string.");
+                stktb::err(i, "STORE", "The name of the variable must be a string.");
             }
-            env.stack.erase(env.stack.begin()+(env.stack.size()-2), env.stack.end());
         }
-        else if (line == "DEBUG")
+        else if (line == Token::LOAD)
         {
-            std::vector<std::string> stack, vars;
-            for (auto e : env.stack)
-            {
-                tomboys::fdebug(stack, e, ln);
-            }
-            std::cout << "[DEBUG] ";
-            for (auto e : stack)
-            {
-                std::cout << e << " ";
-            }
-            std::cout << "\n";
-        }
-        else if (line == "LOAD")
-        {
-            tomboys::token_t name;
-            try
-            {
-                name = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "LOAD", e.what());
-            }
-
+            stktb::token_t name = stktb::get(env);
             if (std::holds_alternative<std::string>(name))
             {
                 try
                 {
-                    env.stack.push_back(env.vars.at(std::get<std::string>(name)));
+                    env.stack.push(env.vars.at(std::get<std::string>(name)));
                 }
                 catch (const std::exception& e)
                 {
-                    tomboys::inputerr(ln, "LOAD", e.what());
+                    stktb::err(i, "LOAD", e.what());
                 }
             }
             else
             {
-                tomboys::inputerr(ln, "LOAD", "The name of the variable must be a string.");
+                stktb::err(i, "LOAD", "The name of the variable must be a string.");
             }
-            env.stack.pop_back();
         }
-        else if (line == "PRINT")
+        else if (line == Token::ERASE)
         {
-            tomboys::token_t token;
-            try
+            stktb::token_t name = stktb::get(env);
+            if (std::holds_alternative<std::string>(name))
             {
-                token = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "PRINT", e.what());
-            }
-
-            if (std::holds_alternative<std::string>(token))
-            {
-                std::cout << std::get<std::string>(token);
-            }
-            else if (std::holds_alternative<std::int64_t>(token))
-            {
-                std::cout << std::to_string(std::get<std::int64_t>(token));
-            }
-            else if (std::holds_alternative<double>(token))
-            {
-                std::cout << std::to_string(std::get<double>(token));
-            }
-            else if (std::holds_alternative<tomboys::Token>(token))
-            {
-                switch (std::get<tomboys::Token>(token))
-                {
-                    case tomboys::Token::TRUE:
-                        std::cout << "TRUE";
-                        break;
-                    case tomboys::Token::FALSE:
-                        std::cout << "FALSE";
-                        break;
-                    default:
-                        tomboys::inputerr(ln, "PRINT", "Unknown token type.");
-                }
-            }
-            env.stack.pop_back();
-        }
-        else if (line == "NEWLINE")
-        {
-            env.stack.push_back("\n");
-        }
-        else if (line == "PRINT-STDERR")
-        {
-            tomboys::token_t token;
-            try
-            {
-                token = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "LOAD", e.what());
-            }
-
-            if (std::holds_alternative<std::string>(token))
-            {
-                std::cerr << std::get<std::string>(token);
-            }
-            else if (std::holds_alternative<std::int64_t>(token))
-            {
-                std::cerr << std::to_string(std::get<std::int64_t>(token));
-            }
-            else if (std::holds_alternative<double>(token))
-            {
-                std::cerr << std::to_string(std::get<double>(token));
-            }
-            else if (std::holds_alternative<tomboys::Token>(token))
-            {
-                switch (std::get<tomboys::Token>(token))
-                {
-                    case tomboys::Token::TRUE:
-                        std::cerr << "TRUE";
-                        break;
-                    case tomboys::Token::FALSE:
-                        std::cerr << "FALSE";
-                        break;
-                    default:
-                        tomboys::inputerr(ln, "PRINT", "Unknown token type.");
-                }
-            }
-            env.stack.pop_back();            
-        }
-        else if (line == "INPUT")
-        {
-            std::string s;
-            std::getline(std::cin, s);
-            env.stack.push_back(s);
-        }
-        else if (line == "ADD")
-        {
-            tomboys::opdo(ln, env, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<std::int64_t>(l)+std::get<std::int64_t>(r));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<double>(l)+std::get<double>(r));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<double>(l)+std::get<std::int64_t>(r));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<std::int64_t>(l)+std::get<double>(r));
-            });
-        }
-        else if (line == "SUB")
-        {
-            tomboys::opdo(ln, env, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<std::int64_t>(l)-std::get<std::int64_t>(r));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<double>(l)-std::get<double>(r));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<double>(l)-std::get<std::int64_t>(r));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<std::int64_t>(l)-std::get<double>(r));
-            });   
-        }
-        else if (line == "MUL")
-        {
-            tomboys::opdo(ln, env, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<std::int64_t>(l)*std::get<std::int64_t>(r));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<double>(l)*std::get<double>(r));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<double>(l)*std::get<std::int64_t>(r));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<std::int64_t>(l)*std::get<double>(r));
-            });
-        }
-        else if (line == "DIV")
-        {
-            tomboys::opdo(ln, env, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<std::int64_t>(l)/std::get<std::int64_t>(r));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<double>(l)/std::get<double>(r));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<double>(l)/std::get<std::int64_t>(r));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<std::int64_t>(l)/std::get<double>(r));
-            });
-        }
-        else if (line == "MOD")
-        {
-            tomboys::opdo(ln, env, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::get<std::int64_t>(l)%std::get<std::int64_t>(r));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::remainder(std::get<double>(l), std::get<double>(r)));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::remainder(std::get<double>(l), std::get<std::int64_t>(r)));
-            }, [](tomboys::envs& env, tomboys::token_t& l, tomboys::token_t& r){
-                env.stack.push_back(std::remainder(std::get<std::int64_t>(l), std::get<double>(r)));
-            });
-        }
-        else if (line == "ADD-STRING")
-        {
-            tomboys::token_t l, r;
-            try
-            {
-                r = env.stack.back();
-                l = env.stack.at(env.stack.size()-2);
-            }
-            catch(const std::exception& e)
-            {
-                tomboys::inputerr(ln, "ADD-STRING", e.what());
-            }
-
-            if (std::holds_alternative<std::string>(l) && std::holds_alternative<std::string>(r))
-            {
-                env.stack.erase(env.stack.begin()+(env.stack.size()-2), env.stack.end());
-                env.stack.push_back(std::get<std::string>(l)+std::get<std::string>(r));
+                env.vars.erase(std::get<std::string>(name));
             }
             else
             {
-                tomboys::inputerr(ln, "ADD-STRING", "The operator's operand should be a string.");
+                stktb::err(i, "ERASE", "The name of the variable must be a string.");
             }
         }
-        else if (line == "SUBSTR")
+        else if (line == Token::DEF)
         {
-            tomboys::token_t begin, end, str;
-            try
+            stktb::token_t name = stktb::get(env);
+            if (std::holds_alternative<std::string>(name))
             {
-                str = env.stack.at(env.stack.size()-3);
-                begin = env.stack.at(env.stack.size()-2);
-                end = env.stack.back();
-            }
-            catch(const std::exception& e)
-            {
-                tomboys::inputerr(ln, "SUBSTR", e.what());
-            }
-
-            if (std::holds_alternative<std::string>(str) &&
-                std::holds_alternative<std::int64_t>(begin) && 
-                std::holds_alternative<std::int64_t>(end))
-            {
-                std::int64_t b = std::get<std::int64_t>(begin), e = std::get<std::int64_t>(end);
-                std::string s = std::get<std::string>(str);
-                env.stack.erase(env.stack.begin()+(env.stack.size()-3), env.stack.end());
-                env.stack.push_back(s.substr(b, e));
+                env.insub = true;
+                std::string name_s = std::get<std::string>(name);
+                env.subs.insert_or_assign(name_s, i);
             }
             else
             {
-                tomboys::inputerr(ln, "SUBSTR", "The operator's operand should be a string and number.");
+                stktb::err(i, "DEF", "The name of the function must be a string.");
             }
         }
-        else if (line == "IF-TRUE")
+        else if (line == Token::CALL)
         {
-            tomboys::token_t token;
-            try
-            {
-                token = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "IF", e.what());
-            }
-
-            if (tomboys::distbool(token))
-            {
-                env.intrueblock.push(true);
-            }
-            else
-            {
-                env.intrueblock.push(false);
-            }
-            env.stack.pop_back();
-        }
-        else if (line == "IF-FALSE")
-        {
-            tomboys::token_t token;
-            try
-            {
-                token = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "IF", e.what());
-            }
-
-            if (!tomboys::distbool(token))
-            {
-                env.intrueblock.push(true);
-            }
-            else
-            {
-                env.intrueblock.push(false);
-            }
-            env.stack.pop_back();            
-        }
-        else if (line == "GOTO")
-        {
-            tomboys::token_t token;
-            try
-            {
-                token = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "GOTO", e.what());
-            }
-
-            if (std::holds_alternative<std::int64_t>(token))
-            {
-                ln += std::get<std::int64_t>(token);
-            }
-            else
-            {
-                tomboys::inputerr(ln, "GOTO", "The operator's operand should be a number.");
-            }
-            env.stack.pop_back();
-        }
-        else if (line == "DEF")
-        {
-            tomboys::token_t token;
-            try
-            {
-                token = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "DEF", e.what());
-            }
-            env.stack.pop_back();
-
-            if (std::holds_alternative<std::string>(token))
-            {
-                env.subroutines.insert_or_assign(std::get<std::string>(token), ln);
-            }
-            else
-            {
-                tomboys::inputerr(ln, "DEF", "Function name should be a string.");
-            }
-            env.infunc = true;
-        }
-        else if (line == "CALL")
-        {
-            tomboys::token_t token;
-            try
-            {
-                token = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "CALL", e.what());
-            }
-
-            env.current = ln;
-            if (std::holds_alternative<std::string>(token))
-            {
-                ln = env.subroutines.at(std::get<std::string>(token));
-            }
-            else
-            {
-                tomboys::inputerr(ln, "CALL", "Operand should be a string.");
-            }
-            env.stack.pop_back();
-        }
-        else if (line == "LT")
-        {
-            tomboys::token_t l, r;
-            try
-            {
-                l = env.stack.at(env.stack.size()-2);
-                r = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "LT", e.what());
-            }
-
-            if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<std::int64_t>(r))
-            {
-                env.stack.erase(env.stack.begin()+(env.stack.size()-2), env.stack.end());
-                env.stack.push_back(std::int64_t(l < r));
-            }
-            else
-            {
-                tomboys::inputerr(ln, "LT", "The operator`s operand should be a number.");
-            }
-        }
-        else if (line == "GT")
-        {
-            tomboys::token_t l, r;
-            try
-            {
-                l = env.stack.at(env.stack.size()-2);
-                r = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "GT", e.what());
-            }
-
-            if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<std::int64_t>(r))
-            {
-                env.stack.erase(env.stack.begin()+(env.stack.size()-2), env.stack.end());
-                env.stack.push_back(std::int64_t(l > r));
-            }
-            else
-            {
-                tomboys::inputerr(ln, "GT", "The operator`s operand should be a number.");
-            }
-        }
-        else if (line == "EQ")
-        {
-            tomboys::token_t l, r;
-            try
-            {
-                l = env.stack.at(env.stack.size()-2);
-                r = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "EQ", e.what());
-            }
-
-            if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<std::int64_t>(r))
-            {
-                env.stack.erase(env.stack.begin()+(env.stack.size()-2), env.stack.end());
-                env.stack.push_back(std::int64_t(l == r));
-            }
-            else
-            {
-                tomboys::inputerr(ln, "EQ", "The operator`s operand should be a number.");
-            }
-        }
-        else if (line == "NEQ")
-        {
-            tomboys::token_t l, r;
-            try
-            {
-                l = env.stack.at(env.stack.size()-2);
-                r = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "NEQ", e.what());
-            }
-
-            if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<std::int64_t>(r))
-            {
-                env.stack.erase(env.stack.begin()+(env.stack.size()-2), env.stack.end());
-                env.stack.push_back(std::int64_t(l != r));
-            }
-            else
-            {
-                tomboys::inputerr(ln, "NEQ", "The operator`s operand should be a number.");
-            }
-        }
-        else if (line == "NOT")
-        {
-            tomboys::token_t token;
-            env.stack.push_back(!tomboys::distbool(token));
-        }
-        else if (line == "OR")
-        {
-            tomboys::token_t l, r;
-            try
-            {
-                l = env.stack.at(env.stack.size()-2);
-                r = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "OR", e.what());
-            }
-            env.stack.push_back(std::int64_t(tomboys::distbool(l) || tomboys::distbool(r)));
-        }
-        else if (line == "AND")
-        {
-            tomboys::token_t l, r;
-            try
-            {
-                l = env.stack.at(env.stack.size()-2);
-                r = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "AND", e.what());
-            }
-            env.stack.push_back(std::int64_t(tomboys::distbool(l) && tomboys::distbool(r)));
-        }
-        else if (line == "USE")
-        {
-            tomboys::token_t file, func;
-            try
-            {
-                file = env.stack.at(env.stack.size()-2);
-                func = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "USE", e.what());
-            }
-
-            if (std::holds_alternative<std::string>(file) && std::holds_alternative<std::string>(func))
+            stktb::token_t name = stktb::get(env);
+            if (std::holds_alternative<std::string>(name))
             {
                 try
                 {
-                    boost::dll::shared_library lib{std::get<std::string>(file)};
-                    boost::function<tomboys::ft> funcc = lib.get<tomboys::ft>(std::get<std::string>(func));
-                    env.func.insert_or_assign(std::get<std::string>(func), funcc);
+                    env.current = i;
+                    i = env.subs.at(std::get<std::string>(name));
                 }
                 catch (const std::exception& e)
                 {
-                    tomboys::inputerr(ln, "USE", e.what());
+                    stktb::err(i, "CALL", e.what());
                 }
             }
             else
             {
-                tomboys::inputerr(ln, "USE", "Function name and module name should be a string.");
+                stktb::err(i, "CALL", "The name of the function must be a string.");
             }
         }
-        else if (line == "CALL-MODULE")
+        else if (line == Token::DEBUG)
         {
-            tomboys::token_t func;
-            try
+            stktb::token_t t = stktb::get(env);
+            std::visit([](const auto& res){
+                std::cout << res << "\n";
+            }, t);
+        }
+        else if (line == Token::IMPORT)
+        {
+            stktb::token_t modname = stktb::get(env);
+            if (std::holds_alternative<std::string>(modname))
             {
-                func = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "USE", e.what());
-            }            
-            
-            if (std::holds_alternative<std::string>(func))
-            {
-                env.func.at(std::get<std::string>(func))(env, ln);
+                std::string mod = std::get<std::string>(modname);
+                boost::dll::shared_library lib{mod};
+                env.mods.insert_or_assign(mod, lib);
             }
             else
             {
-                tomboys::inputerr(ln, "CALL=MODULE", "Function name should be a string.");
+                stktb::err(i, "IMPORT", "The name of module must be a string.");
             }
         }
-        else if (line == "ERASE")
+        else if (line == Token::USING)
         {
-            tomboys::token_t token;
-            try
+            stktb::token_t modname = stktb::get(env), funcname = stktb::get(env);
+            if (std::holds_alternative<std::string>(funcname) && std::holds_alternative<std::string>(modname))
             {
-                token = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "ERASE", e.what());
-            }
-
-            if (std::holds_alternative<std::string>(token))
-            {
-                for (auto element = env.vars.begin(); element != env.vars.end(); element++)
+                std::string mod = std::get<std::string>(modname), funcn = std::get<std::string>(funcname);
+                try
                 {
-                    if (element->first == std::get<std::string>(token))
-                    {
-                        env.vars.erase(element);
-                    }
+                    boost::function<void(stktb::envs&, std::size_t)> func = env.mods.at(mod).get<void(stktb::envs&, std::size_t)>(funcn);
+                    env.user_funcs.insert_or_assign(mod+"."+funcn, func);
                 }
-                for (auto element = env.func.begin(); element != env.func.end(); element++)
+                catch (const std::exception& e)
                 {
-                    if (element->first == std::get<std::string>(token))
-                    {
-                        env.func.erase(element);
-                    }
+                    stktb::err(i, "USING", e.what());
                 }
             }
             else
             {
-                tomboys::inputerr(ln, "ERASE", "Key name should be a string.");
+                stktb::err(i, "USING", "The name of function or module must be a string.");
             }
         }
-        else if (line == "EXIT")
+        else if (line == Token::RUN)
         {
-            tomboys::token_t token;
-            try
+            stktb::token_t name = stktb::get(env);
+            if (std::holds_alternative<std::string>(name))
             {
-                token = env.stack.back();
-            }
-            catch (const std::exception& e)
-            {
-                tomboys::inputerr(ln, "EXIT", e.what());
-            }
-
-            if (std::holds_alternative<std::int64_t>(token))
-            {
-                std::exit(std::get<std::int64_t>(token));
+                env.user_funcs.at(std::get<std::string>(name))(env, i);
             }
             else
             {
-                tomboys::inputerr(ln, "EXIT", "Exit code should be a number.");
+                stktb::err(i, "RUN", "The name of function must be a string.");
             }
         }
-        else if (std::regex_match(line, str))
+        else if (line == Token::IF_TRUE)
         {
-            env.stack.push_back(line.substr(1, line.length()-2));
+            stktb::token_t t = stktb::get(env);
+            if (stktb::makebool(t))
+            {
+                env.inblock.push(true);
+            }
+            else
+            {
+                env.inblock.push(false);
+            }
         }
-        else if (std::regex_match(line, intre))
+        else if (line == Token::IF_FALSE)
         {
-            env.stack.push_back(std::int64_t(std::stoi(line)));
+            stktb::token_t t = stktb::get(env);
+            if (!stktb::makebool(t))
+            {
+                env.inblock.push(true);
+            }
+            else
+            {
+                env.inblock.push(false);
+            }
         }
-        else if (std::regex_match(line, num))
+        else if (line == Token::GOTO)
         {
-            env.stack.push_back(std::stod(line));
+            stktb::token_t t = stktb::get(env);
+            if (std::holds_alternative<std::int64_t>(t))
+            {
+                i += std::get<std::int64_t>(t);
+            }
+            else
+            {
+                stktb::err(i, "GOTO", "Relative distances must be numeric.");
+            }
         }
-        else if (std::regex_match(line, comment))
+        else if (line == Token::AND)
         {
-            continue;
+            stktb::token_t l = stktb::get(env), r = stktb::get(env);
+            env.stack.push(std::int64_t(stktb::makebool(l) && stktb::makebool(r)));
+        }
+        else if (line == Token::OR)
+        {
+            stktb::token_t l = stktb::get(env), r = stktb::get(env);
+            env.stack.push(std::int64_t(stktb::makebool(l) || stktb::makebool(r)));            
+        }
+        else if (line == Token::GT)
+        {
+            stktb::token_t l = stktb::get(env), r = stktb::get(env);
+            if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<std::int64_t>(r))
+            {
+                env.stack.push(std::int64_t(std::get<std::int64_t>(l) > std::get<std::int64_t>(r)));
+            }
+            else if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<double>(r))
+            {
+                env.stack.push(std::int64_t(std::get<std::int64_t>(l) > std::get<double>(r)));
+            }
+            else if (std::holds_alternative<double>(l) && std::holds_alternative<std::int64_t>(r))
+            {
+                env.stack.push(std::int64_t(std::get<double>(l) > std::get<std::int64_t>(r)));
+            }
+            else if (std::holds_alternative<double>(l) && std::holds_alternative<double>(r))
+            {
+                env.stack.push(std::int64_t(std::get<double>(l) > std::get<double>(r)));
+            }
+            else
+            {
+                stktb::err(i, "GT", "Operands should be numbers.");
+            }
+        }
+        else if (line == Token::LT)
+        {
+            stktb::token_t l = stktb::get(env), r = stktb::get(env);
+            if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<std::int64_t>(r))
+            {
+                env.stack.push(std::int64_t(std::get<std::int64_t>(l) < std::get<std::int64_t>(r)));
+            }
+            else if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<double>(r))
+            {
+                env.stack.push(std::int64_t(std::get<std::int64_t>(l) < std::get<double>(r)));
+            }
+            else if (std::holds_alternative<double>(l) && std::holds_alternative<std::int64_t>(r))
+            {
+                env.stack.push(std::int64_t(std::get<double>(l) < std::get<std::int64_t>(r)));
+            }
+            else if (std::holds_alternative<double>(l) && std::holds_alternative<double>(r))
+            {
+                env.stack.push(std::int64_t(std::get<double>(l) < std::get<double>(r)));
+            }
+            else
+            {
+                stktb::err(i, "GT", "Operands should be numbers.");
+            }
+        }
+        else if (line == Token::ADD)
+        {
+            stktb::token_t l = stktb::get(env), r = stktb::get(env);
+            if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<std::int64_t>(r))
+            {
+                env.stack.push(std::get<std::int64_t>(l) + std::get<std::int64_t>(r));
+            }
+            else if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<double>(r))
+            {
+                env.stack.push(std::get<std::int64_t>(l) + std::get<double>(r));
+            }
+            else if (std::holds_alternative<double>(l) && std::holds_alternative<std::int64_t>(r))
+            {
+                env.stack.push(std::get<double>(l) + std::get<std::int64_t>(r));
+            }
+            else if (std::holds_alternative<double>(l) && std::holds_alternative<double>(r))
+            {
+                env.stack.push(std::get<double>(l) + std::get<double>(r));
+            }
+            else
+            {
+                stktb::err(i, "GT", "Operands should be numbers.");
+            }
+        }
+        else if (line == Token::SUB)
+        {
+            stktb::token_t l = stktb::get(env), r = stktb::get(env);
+            if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<std::int64_t>(r))
+            {
+                env.stack.push(std::get<std::int64_t>(l) - std::get<std::int64_t>(r));
+            }
+            else if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<double>(r))
+            {
+                env.stack.push(std::get<std::int64_t>(l) - std::get<double>(r));
+            }
+            else if (std::holds_alternative<double>(l) && std::holds_alternative<std::int64_t>(r))
+            {
+                env.stack.push(std::get<double>(l) - std::get<std::int64_t>(r));
+            }
+            else if (std::holds_alternative<double>(l) && std::holds_alternative<double>(r))
+            {
+                env.stack.push(std::get<double>(l) - std::get<double>(r));
+            }
+            else
+            {
+                stktb::err(i, "GT", "Operands should be numbers.");
+            }
+        }
+        else if (line == Token::MUL)
+        {
+            stktb::token_t l = stktb::get(env), r = stktb::get(env);
+            if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<std::int64_t>(r))
+            {
+                env.stack.push(std::get<std::int64_t>(l) * std::get<std::int64_t>(r));
+            }
+            else if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<double>(r))
+            {
+                env.stack.push(std::get<std::int64_t>(l) * std::get<double>(r));
+            }
+            else if (std::holds_alternative<double>(l) && std::holds_alternative<std::int64_t>(r))
+            {
+                env.stack.push(std::get<double>(l) * std::get<std::int64_t>(r));
+            }
+            else if (std::holds_alternative<double>(l) && std::holds_alternative<double>(r))
+            {
+                env.stack.push(std::get<double>(l) * std::get<double>(r));
+            }
+            else
+            {
+                stktb::err(i, "GT", "Operands should be numbers.");
+            }
+        }
+        else if (line == Token::DIV)
+        {
+            stktb::token_t l = stktb::get(env), r = stktb::get(env);
+            if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<std::int64_t>(r))
+            {
+                env.stack.push(std::get<std::int64_t>(l) / std::get<std::int64_t>(r));
+            }
+            else if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<double>(r))
+            {
+                env.stack.push(std::get<std::int64_t>(l) / std::get<double>(r));
+            }
+            else if (std::holds_alternative<double>(l) && std::holds_alternative<std::int64_t>(r))
+            {
+                env.stack.push(std::get<double>(l) / std::get<std::int64_t>(r));
+            }
+            else if (std::holds_alternative<double>(l) && std::holds_alternative<double>(r))
+            {
+                env.stack.push(std::get<double>(l) / std::get<double>(r));
+            }
+            else
+            {
+                stktb::err(i, "GT", "Operands should be numbers.");
+            }
+        }
+        else if (line == Token::MOD)
+        {
+            stktb::token_t l = stktb::get(env), r = stktb::get(env);
+            if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<std::int64_t>(r))
+            {
+                env.stack.push(std::get<std::int64_t>(l) % std::get<std::int64_t>(r));
+            }
+            else if (std::holds_alternative<std::int64_t>(l) && std::holds_alternative<double>(r))
+            {
+                env.stack.push(std::remainder(std::get<std::int64_t>(l), std::get<double>(r)));
+            }
+            else if (std::holds_alternative<double>(l) && std::holds_alternative<std::int64_t>(r))
+            {
+                env.stack.push(std::remainder(std::get<double>(l), std::get<std::int64_t>(r)));
+            }
+            else if (std::holds_alternative<double>(l) && std::holds_alternative<double>(r))
+            {
+                env.stack.push(std::remainder(std::get<double>(l), std::get<double>(r)));
+            }
+            else
+            {
+                stktb::err(i, "GT", "Operands should be numbers.");
+            }
         }
         else
         {
-            tomboys::inputerr(ln, "main-process", "No such token or value type found.");
+            stktb::err(i, "main-process", "Unknown token type.");
         }
     }
 }
